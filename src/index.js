@@ -77,7 +77,7 @@ exports.handler = (event, context, callback) => {
     console.log('From SNS:', message);
     
     var detail = JSON.parse(message);
-    var instanceId = detail['instance-Id'],
+    var instanceId = detail['instance-id'],
         state = detail.state; 
 
     var params = { InstanceIds: [instanceId]};
