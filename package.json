@@ -1,0 +1,21 @@
+{
+  "name": "aws-lambda-dns",
+  "version": "1.0.0",
+  "description": "using aws lambda function to modify dns record everytime ec2 instance starts.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "aws",
+    "ec2",
+    "lambda",
+    "route53",
+    "dns"
+  ],
+  "author": "Kuan Yao",
+  "license": "ISC",
+  "dependencies": {
+    "aws-sdk": "^2.5.1"
+  }
+}
