@@ -11,11 +11,13 @@
     "ec2",
     "lambda",
     "route53",
-    "dns"
+    "dns",
+    "sns"
   ],
   "author": "Kuan Yao",
   "license": "ISC",
   "dependencies": {
     "aws-sdk": "^2.5.1"
-  }
+  },
+  "homepage": "https://github.com/kuanyao/aws-lambda-dns#readme"
 }
