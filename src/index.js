@@ -3,7 +3,6 @@
 console.log('Loading function');
 
 var AWS = require('aws-sdk');
-var ec2 = new AWS.EC2({ "region": "us-east-1"});
 var route53 = new AWS.Route53();
 
 function updateDnsRecord(name, domain, ipAddress) {
@@ -76,9 +75,13 @@ exports.handler = (event, context, callback) => {
     const message = event.Records[0].Sns.Message;
     console.log('From SNS:', message);
     
-    var detail = JSON.parse(message);
-    var instanceId = detail['instance-id'],
-        state = detail.state; 
+    var ec2Event = JSON.parse(message),
+        detail = ec2Event['detail'],
+        instanceId = detail['instance-id'],
+        state = detail.state,
+        ec2Region = ec2Event['region'];
+
+    var ec2 = new AWS.EC2({ "region": ec2Region});
 
     var params = { InstanceIds: [instanceId]};
 

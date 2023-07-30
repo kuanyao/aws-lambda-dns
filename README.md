@@ -2,9 +2,18 @@
 Use AWS lambda function to update DNS record in Route53 for given EC2 instances
 
 ### Introduction
-When EC2 instances start, they can be configured to assign a public IP address. In most time the iP addresses are dynmaically assigned unless the instance is iassocated with an Elastic IP. The IP address stays the same when instances are running. However, one may have reasons to stop and start instance periodically. For example, stop instances that no need to run during evening or weekend, test or demand, etc. However when the instance is restarted, the address will be different. This gives some difficulties if one needs to log into the host, or have to access the service hosted in that instance. He/She needs go to AWS console to find the IP address, or use some API to get it.
+When EC2 instances start, they can be configured to assign a public IP address. In most time the iP addresses are dynmaically assigned unless the instance is iassocated with an Elastic IP. The IP address stays the same when instances are running. However, one may have reasons to stop and start instance periodically. For example, stop instances that no need to run during evening or weekend, test or demand, etc. When the instance is restarted, the address will be different. This gives some difficulties if someone needs to log into the host, or have to access the service hosted in that instance. They have go to AWS console to find the IP address, or use some API to get it.
 
 It will be ideal that everytime when an EC2 instance's IP address changes, its public DNS entry is automatically updated in a Name Server. That one can keep using its dns name regardless the IP address change. This project is using AWS IAM, EC2, Lambda, Cloud Watch, SNS, and Route53 to achieve this automation.
+
+### 2023 Update
+1. Added support for multi-region Ec2 events: 
+   - In each region, add a rule in the EventBridge to send Ec2 instance status notif (source) to the IAD's default event bus (target)
+   - In IAD, change the event rule detail that include all message sending to the SNS (target)
+   - Update the Lambda to read the region property from the event, and collect Ec2 instance in the according region.
+1. Event Bridge is new service added after 2017, some new concept, but the overall flow remain the same
+1. SNS doesn't seem to be needed here. I forgot why I used it, maybe because of easy for testing. However, EventBridge can invoke the Lambda directly. 
+1. Todo: add cmd to automate this step
 
 ### Design
 - Use AWS Tags to associate instance meta data.
