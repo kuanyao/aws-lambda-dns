@@ -5,115 +5,220 @@ console.log('Loading function');
 var AWS = require('aws-sdk');
 var route53 = new AWS.Route53();
 
+function normalizeTagMap(tags) {
+    return (tags || []).reduce(function(acc, tag) {
+        if (tag && tag.Key) {
+            acc[tag.Key] = tag.Value;
+        }
+        return acc;
+    }, {});
+}
+
+function getRecordName(detail) {
+    return detail.host || detail.name;
+}
+
 function updateDnsRecord(name, domain, ipAddress) {
     var dnsEntry = name + '.' + domain;
-    console.log('request to update dns record for ', dnsEntry);
-    //get hosted zone id
-    return route53.listHostedZonesByName({'DNSName': domain})
+    console.log('request to update dns record for', dnsEntry, 'ip', ipAddress || '(delete)');
+
+    return route53.listHostedZonesByName({ DNSName: domain })
         .promise()
-        .then(function(data){
-            var hostedZone = data.HostedZones.find(hz => hz.Name == domain + '.');
+        .then(function(data) {
+            var hostedZone = data.HostedZones.find(function(hz) {
+                return hz.Name === domain + '.';
+            });
+
             if (hostedZone) {
                 return hostedZone.Id;
             }
         })
-        .then(function(hostedZoneId){
+        .then(function(hostedZoneId) {
             if (!hostedZoneId) {
                 console.log('no hostedZoneId found for ' + domain);
                 return;
             }
 
             var params = {
-              ChangeBatch: { 
-                Changes: [],
-              },
-              HostedZoneId: hostedZoneId
+                ChangeBatch: {
+                    Changes: []
+                },
+                HostedZoneId: hostedZoneId
             };
             var change = {};
+
             if (!ipAddress) {
-                params.ChangeBatch.Comment = 'request to delete for dns record ' + dnsEntry;
+                params.ChangeBatch.Comment = 'request to delete dns record ' + dnsEntry;
                 console.log(params.ChangeBatch.Comment);
 
                 change.Action = 'DELETE';
 
-                //get record set first
-                return route53.listResourceRecordSets({HostedZoneId: hostedZoneId})
-                        .promise()
-                        .then(function(data){
-                            var recordSet = data.ResourceRecordSets.find(rs => rs.Name == dnsEntry + '.');
-                            if (recordSet) {
-                                change.ResourceRecordSet = recordSet;
-                                params.ChangeBatch.Changes.push(change);
-                                return route53.changeResourceRecordSets(params).promise();
-                            }
+                return route53.listResourceRecordSets({ HostedZoneId: hostedZoneId })
+                    .promise()
+                    .then(function(data) {
+                        var recordSet = data.ResourceRecordSets.find(function(rs) {
+                            return rs.Name === dnsEntry + '.';
                         });
-            } else {
-                params.ChangeBatch.Comment = 'request to create/update dns record ' + dnsEntry + ' with ip address ' + ipAddress;
-                console.log(params.ChangeBatch.Comment);
 
-                change.Action = 'UPSERT';
-                change.ResourceRecordSet = { 
-                      Name: dnsEntry,
-                      Type: 'A', 
-                      ResourceRecords: [{Value: ipAddress}],
-                      TTL: 300,
-                    };
+                        if (recordSet) {
+                            change.ResourceRecordSet = recordSet;
+                            params.ChangeBatch.Changes.push(change);
+                            return route53.changeResourceRecordSets(params).promise();
+                        }
 
-                params.ChangeBatch.Changes.push(change);
-                return route53.changeResourceRecordSets(params).promise();
+                        console.log('no existing record found for ' + dnsEntry + '; nothing to delete');
+                    });
             }
+
+            params.ChangeBatch.Comment = 'request to create/update dns record ' + dnsEntry + ' with ip address ' + ipAddress;
+            console.log(params.ChangeBatch.Comment);
+
+            change.Action = 'UPSERT';
+            change.ResourceRecordSet = {
+                Name: dnsEntry,
+                Type: 'A',
+                ResourceRecords: [{ Value: ipAddress }],
+                TTL: 300
+            };
+
+            params.ChangeBatch.Changes.push(change);
+            return route53.changeResourceRecordSets(params).promise();
         })
-        .then(function(data){
+        .then(function(data) {
             if (data) {
-                console.log("succssfully updated dns record for instance " + dnsEntry);
+                console.log('successfully updated dns record for ' + dnsEntry);
             }
         });
 }
 
-exports.handler = (event, context, callback) => {
-    //console.log('Received event:', JSON.stringify(event, null, 2))
-    const message = event.Records[0].Sns.Message;
-    console.log('From SNS:', message);
-    
-    var ec2Event = JSON.parse(message),
-        detail = ec2Event['detail'],
-        instanceId = detail['instance-id'],
-        state = detail.state,
-        ec2Region = ec2Event['region'];
+function buildDnsRequestFromNormalizedMessage(messageBody) {
+    if (messageBody && messageBody.schema === 'ec2-dns-update-request' && messageBody.detail) {
+        return {
+            account: messageBody.account || messageBody.detail.accountId,
+            region: messageBody.region || messageBody.detail.region,
+            instanceId: messageBody.detail.instanceId,
+            state: messageBody.detail.state,
+            domain: messageBody.detail.domain,
+            host: messageBody.detail.host,
+            name: messageBody.detail.name,
+            publicIp: messageBody.detail.publicIp
+        };
+    }
 
-    var ec2 = new AWS.EC2({ "region": ec2Region});
+    return null;
+}
 
-    var params = { InstanceIds: [instanceId]};
+function buildDnsRequestFromEnrichedEventBridgeMessage(messageBody) {
+    if (!messageBody || messageBody.source !== 'kuanyao.ec2dns' || !messageBody.detail) {
+        return null;
+    }
 
-    ec2.describeInstances(params)
+    return {
+        account: messageBody.account || messageBody.detail.accountId,
+        region: messageBody.region || messageBody.detail.region,
+        instanceId: messageBody.detail.instanceId,
+        state: messageBody.detail.state,
+        domain: messageBody.detail.domain,
+        host: messageBody.detail.host,
+        name: messageBody.detail.name,
+        publicIp: messageBody.detail.publicIp
+    };
+}
+
+function buildDnsRequestFromRawEc2Event(messageBody) {
+    if (!messageBody || !messageBody.detail || !messageBody.detail['instance-id']) {
+        return Promise.resolve(null);
+    }
+
+    var detail = messageBody.detail;
+    var instanceId = detail['instance-id'];
+    var state = detail.state;
+    var ec2Region = messageBody.region;
+    var ec2 = new AWS.EC2({ region: ec2Region });
+    var params = { InstanceIds: [instanceId] };
+
+    return ec2.describeInstances(params)
         .promise()
-        .then(function(data){
-            if (data.Reservations.length === 0) {
+        .then(function(data) {
+            if (!data.Reservations || data.Reservations.length === 0 || data.Reservations[0].Instances.length === 0) {
                 console.log('no instance found with instanceId ' + instanceId);
-                return;
+                return null;
             }
-            var instance = data.Reservations[0].Instances[0],
-                tags = instance.Tags;
-            var name, domain, publicIp;
 
-            var domainTag = tags.find(t => t.Key == 'domain');
-            if (!domainTag) return;
-            domain = domainTag.Value;
-            if (!domain) return;
+            var instance = data.Reservations[0].Instances[0];
+            var tags = normalizeTagMap(instance.Tags);
+            var domain = tags.domain;
+            var host = tags.host;
+            var name = host || tags.Name;
 
-            var hostTag = tags.find(t => t.Key == 'host');
-            if (hostTag) name = hostTag.Value;
-
-            if (!name) {
-                var nameTag = tags.find(t => t.Key == 'Name');
-                if (nameTag) name = nameTag.Value;
+            if (!domain || !name) {
+                console.log('instance is missing required domain/host tags', {
+                    instanceId: instanceId,
+                    region: ec2Region,
+                    tags: tags
+                });
+                return null;
             }
-            if (!name) return;
 
-            publicIp = instance.PublicIpAddress;
-            return updateDnsRecord(name, domain, publicIp);
+            return {
+                account: messageBody.account,
+                region: ec2Region,
+                instanceId: instanceId,
+                state: state,
+                domain: domain,
+                host: host,
+                name: name,
+                publicIp: instance.PublicIpAddress
+            };
+        });
+}
+
+function parseSnsMessage(record) {
+    if (!record || !record.Sns || !record.Sns.Message) {
+        return Promise.reject(new Error('Unexpected SNS event shape.'));
+    }
+
+    console.log('From SNS:', record.Sns.Message);
+
+    var messageBody = JSON.parse(record.Sns.Message);
+    var normalizedRequest = buildDnsRequestFromNormalizedMessage(messageBody);
+
+    if (normalizedRequest) {
+        return Promise.resolve(normalizedRequest);
+    }
+
+    var enrichedEventRequest = buildDnsRequestFromEnrichedEventBridgeMessage(messageBody);
+
+    if (enrichedEventRequest) {
+        return Promise.resolve(enrichedEventRequest);
+    }
+
+    return buildDnsRequestFromRawEc2Event(messageBody);
+}
+
+exports.handler = function(event, context, callback) {
+    var records = (event && event.Records) || [];
+
+    return Promise.all(records.map(parseSnsMessage))
+        .then(function(requests) {
+            return Promise.all(requests
+                .filter(function(request) {
+                    return request && request.domain && getRecordName(request);
+                })
+                .map(function(request) {
+                    return updateDnsRecord(
+                        getRecordName(request),
+                        request.domain,
+                        request.publicIp
+                    );
+                })
+            );
         })
-        .catch(function(error){
+        .then(function() {
+            callback(null, { ok: true });
+        })
+        .catch(function(error) {
             console.log(error);
+            callback(error);
         });
 };
