@@ -1,0 +1,19 @@
+{
+  "central": {
+    "accountId": "867878846506",
+    "eventBusName": "ec2-dns-central",
+    "region": "us-east-1",
+    "allowedSourceAccounts": [
+      "867878846506"
+    ]
+  },
+  "sourceDefaults": {
+    "functionName": "ec2_instance_dns_enricher",
+    "roleNamePrefix": "lambda-ec2-dns-enricher",
+    "ruleName": "ec2-instance-status-change",
+    "states": [
+      "running",
+      "stopped"
+    ]
+  }
+}

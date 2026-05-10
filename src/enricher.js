@@ -1,6 +1,13 @@
 'use strict';
 
-var AWS = require('aws-sdk');
+const {
+    DescribeInstancesCommand,
+    EC2Client
+} = require('@aws-sdk/client-ec2');
+const {
+    EventBridgeClient,
+    PutEventsCommand
+} = require('@aws-sdk/client-eventbridge');
 
 function getRegionFromEventBusArn(eventBusArn) {
     var parts = (eventBusArn || '').split(':');
@@ -62,12 +69,11 @@ exports.handler = function(event, context, callback) {
     }
 
     var instanceId = event.detail['instance-id'];
-    var ec2 = new AWS.EC2({ region: event.region });
+    var ec2 = new EC2Client({ region: event.region });
     var centralBusRegion = getRegionFromEventBusArn(eventBusArn);
-    var eventBridge = new AWS.EventBridge({ region: centralBusRegion || event.region });
+    var eventBridge = new EventBridgeClient({ region: centralBusRegion || event.region });
 
-    ec2.describeInstances({ InstanceIds: [instanceId] })
-        .promise()
+    ec2.send(new DescribeInstancesCommand({ InstanceIds: [instanceId] }))
         .then(function(data) {
             if (!data.Reservations || data.Reservations.length === 0 || data.Reservations[0].Instances.length === 0) {
                 console.log('no instance found with instanceId ' + instanceId);
@@ -81,7 +87,7 @@ exports.handler = function(event, context, callback) {
                 return null;
             }
 
-            return eventBridge.putEvents({
+            return eventBridge.send(new PutEventsCommand({
                 Entries: [
                     {
                         EventBusName: eventBusArn,
@@ -93,7 +99,7 @@ exports.handler = function(event, context, callback) {
                         ]
                     }
                 ]
-            }).promise();
+            }));
         })
         .then(function(result) {
             if (result) {

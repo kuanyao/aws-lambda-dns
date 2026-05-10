@@ -2,8 +2,18 @@
 
 console.log('Loading function');
 
-var AWS = require('aws-sdk');
-var route53 = new AWS.Route53();
+const {
+    ChangeResourceRecordSetsCommand,
+    ListHostedZonesByNameCommand,
+    ListResourceRecordSetsCommand,
+    Route53Client
+} = require('@aws-sdk/client-route-53');
+const {
+    DescribeInstancesCommand,
+    EC2Client
+} = require('@aws-sdk/client-ec2');
+
+var route53 = new Route53Client({});
 
 function normalizeTagMap(tags) {
     return (tags || []).reduce(function(acc, tag) {
@@ -23,7 +33,6 @@ function updateDnsRecord(name, domain, ipAddress) {
     console.log('request to update dns record for', dnsEntry, 'ip', ipAddress || '(delete)');
 
     return route53.listHostedZonesByName({ DNSName: domain })
-        .promise()
         .then(function(data) {
             var hostedZone = data.HostedZones.find(function(hz) {
                 return hz.Name === domain + '.';
@@ -53,8 +62,7 @@ function updateDnsRecord(name, domain, ipAddress) {
 
                 change.Action = 'DELETE';
 
-                return route53.listResourceRecordSets({ HostedZoneId: hostedZoneId })
-                    .promise()
+                return route53.send(new ListResourceRecordSetsCommand({ HostedZoneId: hostedZoneId }))
                     .then(function(data) {
                         var recordSet = data.ResourceRecordSets.find(function(rs) {
                             return rs.Name === dnsEntry + '.';
@@ -63,7 +71,7 @@ function updateDnsRecord(name, domain, ipAddress) {
                         if (recordSet) {
                             change.ResourceRecordSet = recordSet;
                             params.ChangeBatch.Changes.push(change);
-                            return route53.changeResourceRecordSets(params).promise();
+                            return route53.send(new ChangeResourceRecordSetsCommand(params));
                         }
 
                         console.log('no existing record found for ' + dnsEntry + '; nothing to delete');
@@ -82,7 +90,7 @@ function updateDnsRecord(name, domain, ipAddress) {
             };
 
             params.ChangeBatch.Changes.push(change);
-            return route53.changeResourceRecordSets(params).promise();
+            return route53.send(new ChangeResourceRecordSetsCommand(params));
         })
         .then(function(data) {
             if (data) {
@@ -134,11 +142,10 @@ function buildDnsRequestFromRawEc2Event(messageBody) {
     var instanceId = detail['instance-id'];
     var state = detail.state;
     var ec2Region = messageBody.region;
-    var ec2 = new AWS.EC2({ region: ec2Region });
+    var ec2 = new EC2Client({ region: ec2Region });
     var params = { InstanceIds: [instanceId] };
 
-    return ec2.describeInstances(params)
-        .promise()
+    return ec2.send(new DescribeInstancesCommand(params))
         .then(function(data) {
             if (!data.Reservations || data.Reservations.length === 0 || data.Reservations[0].Instances.length === 0) {
                 console.log('no instance found with instanceId ' + instanceId);
@@ -172,6 +179,10 @@ function buildDnsRequestFromRawEc2Event(messageBody) {
             };
         });
 }
+
+route53.listHostedZonesByName = function(params) {
+    return route53.send(new ListHostedZonesByNameCommand(params));
+};
 
 function parseSnsMessage(record) {
     if (!record || !record.Sns || !record.Sns.Message) {

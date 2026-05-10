@@ -1,6 +1,6 @@
 # aws-lambda-dns status
 
-Last updated: 2026-03-29
+Last updated: 2026-05-09
 
 ## Current architecture
 
@@ -9,81 +9,98 @@ Last updated: 2026-03-29
   - SNS topic
   - central Route 53 updater Lambda
 - Cross-account path now works:
-  - source-account EventBridge rule
-  - source-account enricher Lambda
-  - central default EventBridge bus
+  - source-region EventBridge rule
+  - source-region enricher Lambda
+  - central custom EventBridge bus
   - central EventBridge rule
   - existing SNS topic
   - existing Route 53 updater Lambda
 
 ## Live resources
 
-Central/default account: `456270554954`
+Central/default account: `867878846506`
 
 - Event bus:
-  - `arn:aws:events:us-east-1:456270554954:event-bus/default`
+  - `arn:aws:events:us-east-1:867878846506:event-bus/ec2-dns-central`
 - SNS topic:
-  - `arn:aws:sns:us-east-1:456270554954:ec2-instance-state-change`
+  - `arn:aws:sns:us-east-1:867878846506:ec2-instance-state-change`
 - Central EventBridge rule for enriched events:
   - `ec2-instance-dns-update-request`
 - Central Lambda:
   - name: `ec2_instance_route53_dns`
   - region: `us-east-1`
-  - role: `lambda-ec2-dns`
+  - deployed by `AwsLambdaDnsCentralStack`
 
-Source account: `867878846506` (`pkyao`)
+Source account/region now managed by CDK:
 
+- account: `867878846506`
+- region: `us-east-2`
 - Source EventBridge rule:
   - `ec2-instance-status-change`
 - Source Lambda:
   - name: `ec2_instance_dns_enricher`
-  - region: `us-east-2`
-  - role: `lambda-ec2-dns-enricher`
+  - role: `lambda-ec2-dns-enricher-us-east-2`
+  - deployed by `AwsLambdaDnsSourceStack`
 
 ## Tested instance
 
 - account: `867878846506`
 - region: `us-east-2`
-- instance id: `i-08ff1ed5c8a63c1fb`
+- instance id: `i-04ff2a11bc1fef962`
 - tags:
-  - `domain=dev.kuanyao.info`
-  - `host=blacksheep`
-  - `Name=dev`
+  - `domain=utility.kuanyao.info`
+  - `host=p-video`
+  - `Name=p-video`
 
 ## Verified result
 
-On 2026-03-29 the source Lambda published an enriched event that the central path processed successfully.
+On 2026-05-09 the CDK-managed `us-east-2` source stack successfully published an enriched event that the central path processed.
 
 Confirmed outputs:
 
-- central Lambda log:
-  - `successfully updated dns record for blacksheep.dev.kuanyao.info`
 - Route 53 record:
-  - `blacksheep.dev.kuanyao.info A 18.191.93.254`
+  - `p-video.utility.kuanyao.info A 3.134.108.31`
 
 ## Code changes in this repo
 
 - [src/index.js](/Users/kuanyao/github/aws-lambda-dns/src/index.js)
   - accepts both legacy SNS-wrapped raw EC2 events and enriched SNS-wrapped EventBridge events
 - [src/enricher.js](/Users/kuanyao/github/aws-lambda-dns/src/enricher.js)
-  - new source-account enrichment Lambda
+  - source-region enrichment Lambda
+- [config/topology.json](/Users/kuanyao/github/aws-lambda-dns/config/topology.json)
+  - tracked central/source rollout topology
+- [infra/cdk](/Users/kuanyao/github/aws-lambda-dns/infra/cdk/package.json)
+  - central and source CDK stacks
 - [README.md](/Users/kuanyao/github/aws-lambda-dns/README.md)
-  - documents the new dual-path architecture
+  - documents the managed dual-path architecture and onboarding steps
 
 ## IAM notes
 
 - Source Lambda needs:
   - `ec2:DescribeInstances`
-  - `events:PutEvents` to the central default bus
+  - `events:PutEvents` to the central custom bus
 - Central Lambda no longer needs cross-account EC2 access for the new path
-- `AWSLambdaBasicExecutionRole` was attached to `lambda-ec2-dns` so logs now appear in CloudWatch
+- Source IAM roles are account-global IAM resources, so source stacks now use region-scoped role names
+  - example: `lambda-ec2-dns-enricher-us-east-2`
 
 ## Resume point
 
-The cross-account `pkyao` -> central EventBridge -> SNS -> Route 53 path is working.
+The central stack and the `us-east-2` source stack are both CDK-managed and working.
 
 Likely next improvements:
 
 - remove SNS from the architecture if you want fewer hops
-- migrate other accounts/regions to the same enrichment contract
-- add IaC/deploy scripts so the new enricher Lambda and rules are reproducible
+- onboard more regions in the same account
+- onboard additional source accounts by updating `config/topology.json`
+- add beta/prod CI/CD around the central and source stacks
+
+## 2026-05-09 planning update
+
+- Central bus permissions come from `config/topology.json`
+- Source stack naming defaults also come from `config/topology.json`
+- Additional accounts can be allowlisted centrally before deploying new regional source stacks
+- Future CI/CD direction:
+  - GitHub private repo via CodeConnections
+  - CodePipeline + CodeBuild
+  - beta stacks before prod
+  - manual approval between beta and prod

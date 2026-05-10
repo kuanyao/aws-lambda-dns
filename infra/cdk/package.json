@@ -1,0 +1,17 @@
+{
+  "name": "@aws-lambda-dns/cdk",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "synth:central": "cdk synth AwsLambdaDnsCentralStack",
+    "deploy:central": "cdk deploy AwsLambdaDnsCentralStack --require-approval never",
+    "synth:source": "DEPLOY_SOURCE_STACK=true cdk synth AwsLambdaDnsSourceStack",
+    "deploy:source": "DEPLOY_SOURCE_STACK=true cdk deploy AwsLambdaDnsSourceStack --require-approval never"
+  },
+  "dependencies": {
+    "aws-cdk-lib": "^2.214.0",
+    "constructs": "^10.4.2",
+    "source-map-support": "^0.5.21"
+  }
+}

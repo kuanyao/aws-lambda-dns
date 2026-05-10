@@ -3,8 +3,16 @@
   "version": "1.0.0",
   "description": "using aws lambda function to modify dns record everytime ec2 instance starts.",
   "main": "index.js",
+  "private": true,
+  "workspaces": [
+    "infra/cdk"
+  ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "cdk:synth:central": "npm --workspace @aws-lambda-dns/cdk run synth:central",
+    "cdk:deploy:central": "npm --workspace @aws-lambda-dns/cdk run deploy:central",
+    "cdk:synth:source": "npm --workspace @aws-lambda-dns/cdk run synth:source",
+    "cdk:deploy:source": "npm --workspace @aws-lambda-dns/cdk run deploy:source"
   },
   "keywords": [
     "aws",
@@ -18,6 +26,9 @@
   "license": "ISC",
   "dependencies": {
     "aws-sdk": "^2.5.1"
+  },
+  "devDependencies": {
+    "aws-cdk": "^2.1019.2"
   },
   "homepage": "https://github.com/kuanyao/aws-lambda-dns#readme"
 }

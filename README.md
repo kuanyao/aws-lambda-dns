@@ -15,58 +15,209 @@ It will be ideal that everytime when an EC2 instance's IP address changes, its p
 1. SNS doesn't seem to be needed here. I forgot why I used it, maybe because of easy for testing. However, EventBridge can invoke the Lambda directly. 
 1. Todo: add cmd to automate this step
 
-### 2026 Update
-This repo now supports both the original same-account flow and a tested cross-account flow.
+### Current Architecture
 
-1. Keep the existing same-account flow unchanged:
-   - EventBridge rule -> SNS topic -> `src/index.js`
-   - `src/index.js` still supports the legacy raw EC2 state-change payload
-2. Add a source-account enrichment Lambda:
-   - `src/enricher.js`
-   - Triggered by the source account EventBridge EC2 state-change rule
-   - Reads the instance locally in that source account/region
-   - Extracts the `domain` / `host` / `Name` tags and public IP
-   - Publishes a normalized DNS update event to the central EventBridge bus
-3. The central DNS Lambda now supports both:
-   - legacy raw EC2 events from SNS
-   - normalized `EC2 DNS Update Request` EventBridge events after they are forwarded through SNS
+This repo supports both:
 
-Recommended cross-account design:
+1. Same-account flow:
+   - default EventBridge EC2 state-change rule
+   - SNS topic
+   - central DNS updater Lambda `src/index.js`
+2. Cross-account / cross-region flow:
+   - source-region EventBridge rule
+   - source-region enricher Lambda `src/enricher.js`
+   - central custom EventBridge bus
+   - central EventBridge rule
+   - SNS topic
+   - central DNS updater Lambda `src/index.js`
 
-- Source account:
-  - EventBridge rule
-  - Lambda using `src/enricher.js`
-  - IAM:
-    - `ec2:DescribeInstances`
-    - `events:PutEvents` to the central EventBridge bus ARN
-- Central/default account:
-  - EventBridge rule matching:
-    - `source = kuanyao.ec2dns`
-    - `detail-type = EC2 DNS Update Request`
-  - existing SNS topic
-  - existing DNS updater Lambda using `src/index.js`
-  - IAM:
-    - Route 53 permissions only for the updater
+The current recommended design is:
 
-Tested flow:
+- Central account/region:
+  - one custom EventBridge bus in `us-east-1`
+  - one SNS topic
+  - one Route 53 updater Lambda
+  - one EventBridge rule that forwards normalized DNS update events from the custom bus to SNS
+- Source account/region:
+  - one EventBridge rule per region on the default bus
+  - one enricher Lambda per region
+  - the enricher reads EC2 tags locally and publishes a normalized event to the central bus
 
-- Source account EventBridge EC2 state-change rule invokes `src/enricher.js`
-- `src/enricher.js` calls `DescribeInstances` in the source account, then publishes a custom event to the central EventBridge bus
-- Central EventBridge rule forwards that custom event to the existing SNS topic
-- SNS invokes the existing DNS updater Lambda
-- DNS updater Lambda updates Route 53 without any cross-account EC2 API call
+The central Lambda does not need cross-account EC2 permissions in this design.
 
-Tested live on 2026-03-29:
+### IaC
 
-- Source account: `867878846506` (`pkyao`)
-- Source region: `us-east-2`
-- Instance: `i-08ff1ed5c8a63c1fb`
-- Tags:
-  - `domain=dev.kuanyao.info`
-  - `host=blacksheep`
-- Central account: `456270554954`
-- Result:
-  - `blacksheep.dev.kuanyao.info -> 18.191.93.254`
+This repo now includes a CDK workspace for both the central stack and regional source stacks.
+
+- Central stack:
+  - `AwsLambdaDnsCentralStack`
+  - resources:
+    - EventBridge bus `ec2-dns-central`
+    - SNS topic `ec2-instance-state-change`
+    - updater Lambda `ec2_instance_route53_dns`
+    - same-account default-bus EC2 rule -> SNS
+    - central custom-bus normalized rule -> SNS
+    - EventBridge bus policies for allowlisted source accounts
+- Source stack:
+  - `AwsLambdaDnsSourceStack`
+  - resources:
+    - enricher Lambda `ec2_instance_dns_enricher`
+    - default-bus EC2 state-change rule
+    - region-scoped IAM role such as `lambda-ec2-dns-enricher-us-east-2`
+
+Tracked topology config lives in:
+
+- [config/topology.json](config/topology.json)
+
+It defines:
+
+- central account id
+- central region
+- central bus name
+- allowlisted source accounts that may `events:PutEvents`
+- default source Lambda / IAM role prefix / rule naming
+
+### Current Live State
+
+Current central account:
+
+- `867878846506`
+
+Current central resources:
+
+- EventBridge bus:
+  - `arn:aws:events:us-east-1:867878846506:event-bus/ec2-dns-central`
+- SNS topic:
+  - `arn:aws:sns:us-east-1:867878846506:ec2-instance-state-change`
+- updater Lambda:
+  - `ec2_instance_route53_dns`
+
+Current CDK-managed source region:
+
+- account: `867878846506`
+- region: `us-east-2`
+- enricher Lambda:
+  - `ec2_instance_dns_enricher`
+- IAM role:
+  - `lambda-ec2-dns-enricher-us-east-2`
+- EventBridge rule:
+  - `ec2-instance-status-change`
+
+### Deploy
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Deploy the central stack from the repo root:
+
+```bash
+npm run cdk:deploy:central
+```
+
+This uses the current default AWS profile/account. The central target is also recorded in `config/topology.json`.
+
+Deploy a source stack in a region:
+
+```bash
+SOURCE_STACK_REGION=us-east-2 npm run cdk:deploy:source
+```
+
+The source deploy derives the central bus ARN from `config/topology.json`, so you do not need to pass it manually.
+
+### Regional Onboarding
+
+To onboard another source region in the same account:
+
+1. Make sure the target region is CDK-bootstrapped.
+   Example:
+
+   ```bash
+   npx cdk bootstrap aws://867878846506/us-west-2
+   ```
+
+2. Deploy the source stack in that region.
+
+   ```bash
+   SOURCE_STACK_REGION=us-west-2 npm run cdk:deploy:source
+   ```
+
+3. Verify:
+   - Lambda `ec2_instance_dns_enricher` exists in that region
+   - EventBridge rule `ec2-instance-status-change` targets that Lambda
+   - IAM role name is region-scoped, for example `lambda-ec2-dns-enricher-us-west-2`
+
+4. Test with a tagged EC2 instance:
+   - required tags:
+     - `domain`
+     - `host` or `Name`
+
+To onboard another source account:
+
+1. Add that account id to `central.allowedSourceAccounts` in `config/topology.json`
+2. Deploy the central stack so the EventBridge bus policy is updated
+3. In the source account, bootstrap the target region
+4. Deploy the source stack in each desired region in that source account
+
+### Testing
+
+Fast verification:
+
+- `npm run cdk:synth:central`
+- `SOURCE_STACK_REGION=us-east-2 npm run cdk:synth:source`
+
+Functional verification:
+
+- invoke the enricher Lambda with a synthetic EC2 state-change event
+- verify the central updater logs
+- verify the Route 53 record
+
+Current tested live example:
+
+- source region: `us-east-2`
+- instance:
+  - `i-04ff2a11bc1fef962`
+- tags:
+  - `domain=utility.kuanyao.info`
+  - `host=p-video`
+- verified Route 53 result:
+  - `p-video.utility.kuanyao.info A 3.134.108.31`
+
+### Future CI/CD
+
+Full CI/CD is not set up yet, but the repo is now structured for it.
+
+Recommended direction:
+
+- Source:
+  - GitHub private repo through CodeConnections
+- Build:
+  - CodeBuild runs:
+    - `npm install`
+    - `npm run cdk:synth:central`
+    - `SOURCE_STACK_REGION=<region> npm run cdk:synth:source`
+    - tests / diffs
+- Deploy:
+  - CodePipeline stages for:
+    - beta central stack
+    - beta source stack(s)
+    - integration test step
+    - manual approval
+    - production central stack
+    - production source stack(s)
+
+For this repo, CodePipeline + CodeBuild is a better fit than CodeDeploy because the primary artifact is CDK / CloudFormation infrastructure.
+
+### Multi-Region And Cross-Account Strategy
+
+- Keep one central stack in `us-east-1`
+- Use one source stack per region
+- Use region-scoped IAM role names for source Lambdas
+- Keep source account permissions explicit in `config/topology.json`
+- Update the central bus policy first before onboarding a new source account
+- Reuse the same normalized event contract across all source regions/accounts
 
 ### Components
 
